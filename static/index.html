@@ -39,12 +39,10 @@
     // 2) Determine the API base URL:
     //    - Locally (dev) we talk to the same host
     //    - In production, replace YOUR_RENDER_URL with your Render service URL
-    const API_BASE = window.location.hostname === "localhost"
-      ? ""
-      : "https://YOUR_RENDER_URL";
+    const API_BASE = window.location.hostname === "http://127.0.0.1:8000";
 
     // 3) Open an SSE connection
-    const es = new EventSource(`${API_BASE}/stream`);
+    const es = new EventSource(`http://127.0.0.1:8000/stream`);
     es.onmessage = e => {
       try {
         const { user: u, text } = JSON.parse(e.data);
@@ -62,14 +60,17 @@
     document.getElementById("input")
       .addEventListener("keypress", async ev => {
         if (ev.key === "Enter" && ev.target.value.trim()) {
-          await fetch(`${API_BASE}/publish`, {
+          console.log("Sending message:", ev.target.value); // Log the message to ensure the handler runs
+          const msg = { user, text: ev.target.value };
+          await fetch(`http://127.0.0.1:8000/publish`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ user, text: ev.target.value })
+            body: JSON.stringify(msg)
           });
-          ev.target.value = "";
+          ev.target.value = ""; // Clear input field
         }
       });
+
   </script>
 </body>
 </html>
