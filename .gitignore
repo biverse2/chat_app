@@ -1,0 +1,16 @@
+# Ignore any virtualenv folder
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# VS Code settings
+.vscode/
+
+# macOS
+.DS_Store
+
+# Env files
+.env*
