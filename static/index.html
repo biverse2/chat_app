@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Kafka Chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      max-width: 800px;
+      margin: 2em auto;
+      padding: 0 1em;
+      background-color: #f9f9f9;
+      color: #333;
+    }
+    h1 {
+      border-bottom: 2px solid #4CAF50;
+      padding-bottom: 0.5em;
+      color: #2E7D32;
+    }
+    #status {
+      margin-bottom: 1em;
+      font-style: italic;
+      color: #666;
+    }
+    #chat {
+      height: 400px;
+      overflow-y: auto;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      padding: 12px;
+      margin-bottom: 1em;
+      background-color: white;
+    }
+    .message {
+      margin-bottom: 8px;
+      padding: 8px 12px;
+      border-radius: 18px;
+      max-width: 80%;
+      word-wrap: break-word;
+    }
+    .own {
+      background-color: #DCF8C6;
+      margin-left: auto;
+      border-bottom-right-radius: 5px;
+    }
+    .other {
+      background-color: #ECECEC;
+      margin-right: auto;
+      border-bottom-left-radius: 5px;
+    }
+    .system {
+      background-color: #FFF3CD;
+      text-align: center;
+      margin: 5px auto;
+      font-style: italic;
+      font-size: 0.9em;
+    }
+    .username {
+      font-weight: bold;
+      margin-bottom: 3px;
+      font-size: 0.85em;
+    }
+    #input-container {
+      display: flex;
+      gap: 10px;
+    }
+    #input {
+      flex-grow: 1;
+      padding: 12px;
+      border: 1px solid #ccc;
+      border-radius: 50px;
+      font-size: 1em;
+      outline: none;
+    }
+    #input:focus {
+      border-color: #4CAF50;
+      box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+    }
+    #send {
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 48px;
+      height: 48px;
+      font-size: 1.2em;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #send:hover {
+      background-color: #2E7D32;
+    }
+    #send:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <h1>Kafka Chat</h1>
+  <div id="status">Connecting...</div>
+  <div id="chat"></div>
+  
+  <div id="input-container">
+    <input id="input" placeholder="Type a message and hit Enter…" autocomplete="off"/>
+    <button id="send">➤</button>
+  </div>
+
+  <script>
+    // 1) Ask for a username
+    const user = prompt("Enter your chat name:") || "Anon" + Math.floor(Math.random() * 1000);
+    
+    // Store connection state
+    let connected = false;
+    const statusElement = document.getElementById("status");
+    const chatElement = document.getElementById("chat");
+    const inputElement = document.getElementById("input");
+    const sendButton = document.getElementById("send");
+    
+    // Get base URL for API calls
+    const baseUrl = window.location.origin;  // This will give us the current server URL
+    
+    // Helper function to add a message to the chat
+    function addMessage(messageUser, text, isSystem = false) {
+      const messageDiv = document.createElement("div");
+      
+      if (isSystem) {
+        messageDiv.className = "message system";
+        messageDiv.textContent = text;
+      } else {
+        // Determine if this is our own message
+        const isOwn = messageUser === user;
+        messageDiv.className = `message ${isOwn ? 'own' : 'other'}`;
+        
+        // Add username (except for our own messages)
+        if (!isOwn) {
+          const usernameDiv = document.createElement("div");
+          usernameDiv.className = "username";
+          usernameDiv.textContent = messageUser;
+          messageDiv.appendChild(usernameDiv);
+        }
+        
+        // Add message text
+        const textDiv = document.createElement("div");
+        textDiv.textContent = text;
+        messageDiv.appendChild(textDiv);
+      }
+      
+      chatElement.appendChild(messageDiv);
+      
+      // Auto-scroll to bottom
+      chatElement.scrollTop = chatElement.scrollHeight;
+    }
+    
+    // Function to send a message
+    async function sendMessage() {
+      const text = inputElement.value.trim();
+      if (!text || !connected) return;
+      
+      try {
+        const msg = { user, text };
+        sendButton.disabled = true;
+        
+        const response = await fetch(`${baseUrl}/publish`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(msg)
+        });
+        
+        const result = await response.json();
+        if (result.status !== "ok") {
+          addMessage("System", `Error sending message: ${result.message || "Unknown error"}`, true);
+        }
+      } catch (err) {
+        addMessage("System", `Connection error: ${err.message}`, true);
+        console.error("Failed to send message:", err);
+      } finally {
+        inputElement.value = "";
+        sendButton.disabled = false;
+        inputElement.focus();
+      }
+    }
+    
+    // Setup event listeners
+    inputElement.addEventListener("keypress", (event) => {
+      if (event.key === "Enter") {
+        sendMessage();
+      }
+    });
+    
+    sendButton.addEventListener("click", sendMessage);
+    
+    // Connect to SSE
+    function connectEventSource() {
+      statusElement.textContent = "Connecting to chat server...";
+      
+      const es = new EventSource(`${baseUrl}/stream`);
+      
+      es.onopen = () => {
+        connected = true;
+        statusElement.textContent = "Connected to chat server";
+        sendButton.disabled = false;
+      };
+      
+      es.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.user && message.text) {
+            const isSystem = message.user === "System";
+            addMessage(message.user, message.text, isSystem);
+          }
+        } catch (err) {
+          console.error("Invalid message format:", event.data, err);
+        }
+      };
+      
+      es.onerror = (err) => {
+        connected = false;
+        statusElement.textContent = "Disconnected. Reconnecting...";
+        sendButton.disabled = true;
+        console.error("EventSource error:", err);
+        
+        // Close current connection
+        es.close();
+        
+        // Try to reconnect after a delay
+        setTimeout(connectEventSource, 3000);
+      };
+    }
+    
+    // Start connection
+    connectEventSource();
+    
+    // Show welcome message
+    addMessage("System", `Welcome, ${user}! You've joined the chat.`, true);
+  </script>
+</body>
+</html>

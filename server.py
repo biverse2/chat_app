@@ -1,10 +1,23 @@
-from fastapi import FastAPI
+import ssl
+import json
+import asyncio
+from kafka import KafkaProducer, KafkaConsumer
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from kafka import KafkaProducer, KafkaConsumer
-import asyncio, json
+from fastapi.middleware.cors import CORSMiddleware
 
+# FastAPI app setup
 app = FastAPI()
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 async def index():
@@ -12,35 +25,79 @@ async def index():
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-producer = KafkaProducer(
-    bootstrap_servers=["localhost:9092"],
-    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-)
+# === Kafka Configuration ===
+KAFKA_BOOTSTRAP_SERVERS = "kafka-chatapp-chatapp-2.c.aivencloud.com:20658"
+TOPIC_NAME = "chat"
+CA_FILE = "ca.pem"
+SSL_CERTFILE = "service.cert"
+SSL_KEYFILE = "service.key"
 
+# Initialize Kafka Producer
+try:
+    producer = KafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        security_protocol="SSL",
+        ssl_cafile=CA_FILE,
+        ssl_certfile=SSL_CERTFILE,
+        ssl_keyfile=SSL_KEYFILE,
+        value_serializer=lambda v: json.dumps(v).encode('utf-8')
+    )
+    print("Kafka producer initialized successfully")
+except Exception as e:
+    raise RuntimeError(f"Failed to initialize Kafka producer: {e}")
+
+# === Publish Endpoint ===
 @app.post("/publish")
 async def publish(msg: dict):
-    producer.send("chat", msg)
-    producer.flush()
-    return {"status": "ok"}
+    if 'user' not in msg or 'text' not in msg:
+        raise HTTPException(status_code=400, detail="Message must contain 'user' and 'text' fields")
+    
+    try:
+        producer.send(TOPIC_NAME, value=msg)
+        producer.flush()
+        return {"status": "ok", "mode": "kafka"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Kafka error: {e}")
 
+# === Stream Endpoint ===
 @app.get("/stream")
 async def stream():
-    consumer = KafkaConsumer(
-        "chat",
-        bootstrap_servers=["localhost:9092"],
-        auto_offset_reset="latest",
-        group_id=None,
-        enable_auto_commit=False,
-        consumer_timeout_ms=1000,
-        value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-    )
-    async def event_generator():
+    try:
+        consumer = KafkaConsumer(
+            TOPIC_NAME,
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            security_protocol="SSL",
+            ssl_cafile=CA_FILE,
+            ssl_certfile=SSL_CERTFILE,
+            ssl_keyfile=SSL_KEYFILE,
+            auto_offset_reset="earliest",
+            group_id=None,
+            enable_auto_commit=True,
+            value_deserializer=lambda m: json.loads(m.decode("utf-8"))
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to initialize Kafka consumer: {e}")
+    
+    async def kafka_event_generator():
         try:
+            yield f"data: {json.dumps({'user': 'System', 'text': 'Connected to Kafka chat stream'})}\n\n"
             while True:
-                for msgs in consumer.poll(timeout_ms=1000).values():
-                    for m in msgs:
-                        yield f"data: {json.dumps(m.value)}\n\n"
-                await asyncio.sleep(0.1)
+                messages = consumer.poll(timeout_ms=1000, max_records=10)
+                for tp, msgs in messages.items():
+                    for message in msgs:
+                        yield f"data: {json.dumps(message.value)}\n\n"
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"Kafka streaming error: {e}")
+            yield f"data: {json.dumps({'user': 'System', 'text': 'Kafka error. Stream ended.'})}\n\n"
         finally:
             consumer.close()
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    return StreamingResponse(kafka_event_generator(), media_type="text/event-stream")
+
+# Health check
+@app.get("/health")
+async def health():
+    return {"status": "ok", "kafka": "connected"}
+
+# Clear endpoint removed since no in-memory store
